@@ -1369,6 +1369,48 @@ void pfcountCommand(client *c) {
     }
 }
 
+
+void compress_base(uint8_t *reg_dense, const uint8_t *reg_raw) {
+    for (int i = 0; i < HLL_REGISTERS; i++) {
+        HLL_DENSE_SET_REGISTER(reg_dense, i, reg_raw[i]);
+    }
+}
+
+void compress_avx512(uint8_t *reg_dense, const uint8_t *reg_raw) {
+    const __m512i indices = _mm512_setr_epi32( //
+        0, 3, 6, 9, 12, 15, 18, 21,            //
+        24, 27, 30, 33, 36, 39, 42, 45         //
+    );
+
+    const uint8_t *r = reg_raw;
+    uint8_t *t = reg_dense;
+
+    for (int i = 0; i < HLL_REGISTERS / 64; ++i) {
+        __m512i x = _mm512_loadu_si512((__m512i *)r);
+
+        __m512i a1, a2, a3, a4;
+        a1 = _mm512_and_si512(x, _mm512_set1_epi32(0x0000003f));
+        a2 = _mm512_and_si512(x, _mm512_set1_epi32(0x00003f00));
+        a3 = _mm512_and_si512(x, _mm512_set1_epi32(0x003f0000));
+        a4 = _mm512_and_si512(x, _mm512_set1_epi32(0x3f000000));
+
+        a2 = _mm512_srli_epi32(a2, 2);
+        a3 = _mm512_srli_epi32(a3, 4);
+        a4 = _mm512_srli_epi32(a4, 6);
+
+        __m512i y1, y2, y;
+        y1 = _mm512_or_si512(a1, a2);
+        y2 = _mm512_or_si512(a3, a4);
+        y = _mm512_or_si512(y1, y2);
+
+        _mm512_i32scatter_epi32((__m512i *)t, indices, y, 1);
+
+        r += 64;
+        t += 48;
+    }
+}
+
+
 /* PFMERGE dest src1 src2 src3 ... srcN => OK */
 void pfmergeCommand(client *c) {
     uint8_t max[HLL_REGISTERS];
@@ -1423,12 +1465,25 @@ void pfmergeCommand(client *c) {
 
     /* Write the resulting HLL to the destination HLL registers and
      * invalidate the cached value. */
-    for (j = 0; j < HLL_REGISTERS; j++) {
-        if (max[j] == 0) continue;
-        hdr = o->ptr;
-        switch(hdr->encoding) {
-        case HLL_DENSE: hllDenseSet(hdr->registers,j,max[j]); break;
-        case HLL_SPARSE: hllSparseSet(o,j,max[j]); break;
+    hdr = o->ptr;
+    if (hdr->encoding == HLL_DENSE) {
+        if (HLL_REGISTERS == 16384 && HLL_BITS == 6) {
+            compress_avx512(hdr->registers, max);
+        } else {
+            compress_base(hdr->registers, max);
+        }
+    } else {
+        for (j = 0; j < HLL_REGISTERS; j++) {
+            if (max[j] == 0) continue;
+            hdr = o->ptr;
+            switch (hdr->encoding) {
+            case HLL_DENSE:
+                hllDenseSet(hdr->registers, j, max[j]);
+                break;
+            case HLL_SPARSE:
+                hllSparseSet(o, j, max[j]);
+                break;
+            }
         }
     }
     hdr = o->ptr; /* o->ptr may be different now, as a side effect of
