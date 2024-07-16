@@ -1057,61 +1057,48 @@ void merge_max_base(uint8_t *reg_raw, const uint8_t *reg_dense) {
     }
 }
 
-void merge_max_avx512(uint8_t *reg_raw, const uint8_t *reg_dense) {
-    const __m512i shuffle = _mm512_set_epi8( //
-        0x80, 11, 10, 9,                     //
-        0x80, 8, 7, 6,                       //
-        0x80, 5, 4, 3,                       //
-        0x80, 2, 1, 0,                       //
-        0x80, 15, 14, 13,                    //
-        0x80, 12, 11, 10,                    //
-        0x80, 9, 8, 7,                       //
-        0x80, 6, 5, 4,                       //
-        0x80, 11, 10, 9,                     //
-        0x80, 8, 7, 6,                       //
-        0x80, 5, 4, 3,                       //
-        0x80, 2, 1, 0,                       //
-        0x80, 15, 14, 13,                    //
-        0x80, 12, 11, 10,                    //
-        0x80, 9, 8, 7,                       //
-        0x80, 6, 5, 4                        //
+void merge_max_avx2(uint8_t *reg_raw, const uint8_t *reg_dense) {
+    const __m256i avx2_shuffle = _mm256_setr_epi8( //
+        4, 5, 6, 0x80,                             //
+        7, 8, 9, 0x80,                             //
+        10, 11, 12, 0x80,                          //
+        13, 14, 15, 0x80,                          //
+        0, 1, 2, 0x80,                             //
+        3, 4, 5, 0x80,                             //
+        6, 7, 8, 0x80,                             //
+        9, 10, 11, 0x80                            //
     );
-
     const uint8_t *r = reg_dense - 4;
     const uint8_t *t = reg_raw;
 
-    for (int i = 0; i < HLL_REGISTERS / 64; ++i) {
-        __m256i x0, x1;
-        __m512i x;
+    for (int i = 0; i < HLL_REGISTERS / 32; ++i) {
+        __m256i x0, x;
         x0 = _mm256_loadu_si256((__m256i *)r);
-        x1 = _mm256_loadu_si256((__m256i *)(r + 24));
+        x = _mm256_shuffle_epi8(x0, avx2_shuffle);
 
-        x = _mm512_inserti64x4(_mm512_castsi256_si512(x0), x1, 1);
-        x = _mm512_shuffle_epi8(x, shuffle);
+        __m256i a1, a2, a3, a4;
+        a1 = _mm256_and_si256(x, _mm256_set1_epi32(0x0000003f));
+        a2 = _mm256_and_si256(x, _mm256_set1_epi32(0x00000fc0));
+        a3 = _mm256_and_si256(x, _mm256_set1_epi32(0x0003f000));
+        a4 = _mm256_and_si256(x, _mm256_set1_epi32(0x00fc0000));
 
-        __m512i a1, a2, a3, a4;
-        a1 = _mm512_and_si512(x, _mm512_set1_epi32(0x0000003f));
-        a2 = _mm512_and_si512(x, _mm512_set1_epi32(0x00000fc0));
-        a3 = _mm512_and_si512(x, _mm512_set1_epi32(0x0003f000));
-        a4 = _mm512_and_si512(x, _mm512_set1_epi32(0x00fc0000));
+        a2 = _mm256_slli_epi32(a2, 2);
+        a3 = _mm256_slli_epi32(a3, 4);
+        a4 = _mm256_slli_epi32(a4, 6);
 
-        a2 = _mm512_slli_epi32(a2, 2);
-        a3 = _mm512_slli_epi32(a3, 4);
-        a4 = _mm512_slli_epi32(a4, 6);
+        __m256i y1, y2, y;
+        y1 = _mm256_or_si256(a1, a2);
+        y2 = _mm256_or_si256(a3, a4);
+        y = _mm256_or_si256(y1, y2);
 
-        __m512i y1, y2, y;
-        y1 = _mm512_or_si512(a1, a2);
-        y2 = _mm512_or_si512(a3, a4);
-        y = _mm512_or_si512(y1, y2);
+        __m256i z = _mm256_loadu_si256((__m256i *)t);
 
-        __m512i z = _mm512_loadu_si512((__m512i *)t);
+        z = _mm256_max_epu8(z, y);
 
-        z = _mm512_max_epu8(z, y);
+        _mm256_storeu_si256((__m256i *)t, z);
 
-        _mm512_storeu_si512((__m512i *)t, z);
-
-        r += 48;
-        t += 64;
+        r += 24;
+        t += 32;
     }
 }
 
@@ -1129,7 +1116,7 @@ int hllMerge(uint8_t *max, robj *hll) {
 
     if (hdr->encoding == HLL_DENSE) {
         if (HLL_REGISTERS == 16384 && HLL_BITS == 6){
-            merge_max_avx512(max, hdr->registers);   
+            merge_max_avx2(max, hdr->registers);   
         }else{
             merge_max_base(max, hdr->registers);
         }
@@ -1376,37 +1363,50 @@ void compress_base(uint8_t *reg_dense, const uint8_t *reg_raw) {
     }
 }
 
-void compress_avx512(uint8_t *reg_dense, const uint8_t *reg_raw) {
-    const __m512i indices = _mm512_setr_epi32( //
-        0, 3, 6, 9, 12, 15, 18, 21,            //
-        24, 27, 30, 33, 36, 39, 42, 45         //
+void compress_avx2(uint8_t *reg_dense, const uint8_t *reg_raw) {
+    const __m256i shuffle = _mm256_setr_epi8( //
+        0, 1, 2,                              //
+        4, 5, 6,                              //
+        8, 9, 10,                             //
+        12, 13, 14,                           //
+        0x80, 0x80, 0x80, 0x80,               //
+        0, 1, 2,                              //
+        4, 5, 6,                              //
+        8, 9, 10,                             //
+        12, 13, 14,                           //
+        0x80, 0x80, 0x80, 0x80                //
     );
-
     const uint8_t *r = reg_raw;
     uint8_t *t = reg_dense;
 
-    for (int i = 0; i < HLL_REGISTERS / 64; ++i) {
-        __m512i x = _mm512_loadu_si512((__m512i *)r);
+    for (int i = 0; i < HLL_REGISTERS / 32; ++i) {
+        __m256i x = _mm256_loadu_si256((__m256i *)r);
 
-        __m512i a1, a2, a3, a4;
-        a1 = _mm512_and_si512(x, _mm512_set1_epi32(0x0000003f));
-        a2 = _mm512_and_si512(x, _mm512_set1_epi32(0x00003f00));
-        a3 = _mm512_and_si512(x, _mm512_set1_epi32(0x003f0000));
-        a4 = _mm512_and_si512(x, _mm512_set1_epi32(0x3f000000));
+        __m256i a1, a2, a3, a4;
+        a1 = _mm256_and_si256(x, _mm256_set1_epi32(0x0000003f));
+        a2 = _mm256_and_si256(x, _mm256_set1_epi32(0x00003f00));
+        a3 = _mm256_and_si256(x, _mm256_set1_epi32(0x003f0000));
+        a4 = _mm256_and_si256(x, _mm256_set1_epi32(0x3f000000));
 
-        a2 = _mm512_srli_epi32(a2, 2);
-        a3 = _mm512_srli_epi32(a3, 4);
-        a4 = _mm512_srli_epi32(a4, 6);
+        a2 = _mm256_srli_epi32(a2, 2);
+        a3 = _mm256_srli_epi32(a3, 4);
+        a4 = _mm256_srli_epi32(a4, 6);
 
-        __m512i y1, y2, y;
-        y1 = _mm512_or_si512(a1, a2);
-        y2 = _mm512_or_si512(a3, a4);
-        y = _mm512_or_si512(y1, y2);
+        __m256i y1, y2, y;
+        y1 = _mm256_or_si256(a1, a2);
+        y2 = _mm256_or_si256(a3, a4);
+        y = _mm256_or_si256(y1, y2);
+        y = _mm256_shuffle_epi8(y, shuffle);
 
-        _mm512_i32scatter_epi32((__m512i *)t, indices, y, 1);
+        __m128i lower, higher;
+        lower = _mm256_castsi256_si128(y);
+        higher = _mm256_extracti128_si256(y, 1);
 
-        r += 64;
-        t += 48;
+        _mm_storeu_si128((__m128i *)t, lower);
+        _mm_storeu_si128((__m128i *)(t + 12), higher);
+
+        r += 32;
+        t += 24;
     }
 }
 
@@ -1468,7 +1468,7 @@ void pfmergeCommand(client *c) {
     hdr = o->ptr;
     if (hdr->encoding == HLL_DENSE) {
         if (HLL_REGISTERS == 16384 && HLL_BITS == 6) {
-            compress_avx512(hdr->registers, max);
+            compress_avx2(hdr->registers, max);
         } else {
             compress_base(hdr->registers, max);
         }
