@@ -13,7 +13,7 @@
 #include <stdint.h>
 #include <math.h>
 
-#if defined (__x86_64__)
+#if defined (HAVE_AVX2)
 #include <immintrin.h>
 #endif
 
@@ -187,14 +187,6 @@ struct hllhdr {
 #define HLL_SPARSE 1 /* Sparse encoding. */
 #define HLL_RAW 255 /* Only used internally, never exposed. */
 #define HLL_MAX_ENCODING 1
-
-/* Detect whether we can enable AVX2 optimizations. 
- * The conditions are picked loosely and can be adjusted as needed. */
-#if (defined(__GNUC__) && __GNUC__ >= 7) || (defined(__clang__) && __clang_major__ >= 7)
-#if defined(__x86_64__)
-#define HLL_ENABLE_AVX2
-#endif
-#endif
 
 static char *invalid_hll_err = "-INVALIDOBJ Corrupted HLL object detected";
 
@@ -1053,9 +1045,9 @@ int hllAdd(robj *o, unsigned char *ele, size_t elesize) {
     }
 }
 
-#if defined(HLL_ENABLE_AVX2)
+#if defined(HAVE_AVX2)
 /* Optimized for the default configuration: 16384 registers of 6 bits each. */
-__attribute__((__target__("avx2")))
+ATTRIBUTE_TARGET_AVX2
 void hllMergeDense_AVX2(uint8_t *reg_raw, const uint8_t *reg_dense) {
     const __m256i shuffle = _mm256_setr_epi8( //
         4, 5, 6, -1,                             //
@@ -1149,7 +1141,7 @@ void hllMergeDense_AVX2(uint8_t *reg_raw, const uint8_t *reg_dense) {
 
 /* Merge dense-encoded registers to raw registers array. */
 void hllMergeDense(uint8_t* reg_raw, const uint8_t* reg_dense) {
-#if defined (HLL_ENABLE_AVX2)
+#if defined (HAVE_AVX2)
     if (HLL_REGISTERS == 16384 && HLL_BITS == 6) {
         if (__builtin_cpu_supports("avx2")) {
             hllMergeDense_AVX2(reg_raw, reg_dense);
@@ -1212,9 +1204,9 @@ int hllMerge(uint8_t *max, robj *hll) {
     return C_OK;
 }
 
-#if defined(HLL_ENABLE_AVX2)
+#if defined(HAVE_AVX2)
 /* Optimized for the default configuration: 16384 registers of 6 bits each. */
-__attribute__((__target__("avx2")))
+ATTRIBUTE_TARGET_AVX2
 void hllDenseCompress_AVX2(uint8_t *reg_dense, const uint8_t *reg_raw) {
     const __m256i shuffle = _mm256_setr_epi8( //
         0, 1, 2,                              //
@@ -1298,7 +1290,7 @@ void hllDenseCompress_AVX2(uint8_t *reg_dense, const uint8_t *reg_raw) {
 
 /* Compress raw registers to dense representation. */
 void hllDenseCompress(uint8_t *reg_dense, const uint8_t *reg_raw) {
-#if defined (HLL_ENABLE_AVX2)
+#if defined (HAVE_AVX2)
     if (HLL_REGISTERS == 16384 && HLL_BITS == 6) {
         if (__builtin_cpu_supports("avx2")) {
             hllDenseCompress_AVX2(reg_dense, reg_raw);
